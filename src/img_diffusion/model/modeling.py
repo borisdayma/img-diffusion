@@ -5,10 +5,11 @@ from typing import Any
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 from flax.core.frozen_dict import unfreeze
 from flax.traverse_util import flatten_dict, unflatten_dict
 from transformers import FlaxPreTrainedModel
-from transformers.modeling_flax_utils import FlaxPreTrainedModel
+from transformers.modeling_flax_utils import ACT2FN, FlaxPreTrainedModel
 from transformers.utils import logging
 
 from .configuration import ImgDiffusionConfig
@@ -50,9 +51,48 @@ class TimeEmbedding(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
         )
         embeddings = dense()(embeddings)
-        embeddings = nn.silu()(embeddings)
+        embeddings = ACT2FN(self.config.activation_function)(embeddings)
         embeddings = dense()(embeddings)
         return embeddings
+
+
+class ConvNextBlock(nn.Module):
+    config: ImgDiffusionConfig
+    channels: int
+    add_norm: bool
+    dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, x, time_embeddings):
+        conv = partial(
+            nn.Conv,
+            features=self.channels,
+            strides=1,
+            padding="SAME",
+            use_bias=self.config.use_bias,
+            dtype=self.dtype,
+        )
+        norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
+        h = norm(x)
+        h = ACT2FN(self.config.activation_function)(h)
+        h = conv(
+            kernel_size=(7, 7),
+            feature_group_count=self.channels,
+        )(h)
+        time_embeddings = ACT2FN(self.config.activation_function)(time_embeddings)
+        time_embeddings = nn.Dense(
+            features=self.channels,
+            use_bias=self.config.use_bias,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+            dtype=self.dtype,
+        )(time_embeddings)
+        time_embeddings = rearrange(time_embeddings, "b c -> b 1 1 c")
+        h = h + time_embeddings
+        if self.add_norm:
+            h = nn.LayerNorm(dtype=self.dtype, use_scale=False)(h)
+        h = ACT2FN(self.config.activation_function)(h)
+        h = conv(kernel_size=(1, 1))(h)
+        return x + h
 
 
 class ImgDiffusionModule(nn.Module):
@@ -61,6 +101,39 @@ class ImgDiffusionModule(nn.Module):
 
     @nn.compact
     def __call__(self, x, img_inputs, timesteps, deterministic: bool = True):
+        # concatenate x with image input
+        assert (
+            x.shape == img_inputs.shape
+        ), f"x and img_inputs must have the same shape, but got {x.shape} and {img_inputs.shape}"
+        x = jnp.concatenate([x, img_inputs], axis=1)
+
+        # time embedding
+        time_embedding = TimeEmbedding(config=self.config, dtype=self.dtype)(timesteps)
+
+        # U-net
+        hidden_states = []
+        for ch_mult in self.config.channel_mult:
+            channels = self.config.model_channels * ch_mult
+            for _ in range(self.config.blocks_per_layer):
+                x = ConvNextBlock(
+                    config=self.config,
+                    channels=channels,
+                    dtype=self.dtype,
+                )(x, time_embedding, deterministic=deterministic)
+
+            # append to hidden states
+            hidden_states.append(x)
+
+            # downsample
+            x = nn.Conv(
+                features=channels,
+                kernel_size=(3, 3),
+                strides=2,
+                padding=1,
+                use_bias=self.config.use_bias,
+                dtype=self.dtype,
+            )(x)
+
         return x
 
 
