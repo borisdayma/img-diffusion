@@ -56,10 +56,18 @@ class TimeEmbedding(nn.Module):
         return embeddings
 
 
+class AttentionBlock(nn.Module):
+    config: ImgDiffusionConfig
+    dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, x):
+        return x
+
+
 class ConvNextBlock(nn.Module):
     config: ImgDiffusionConfig
     channels: int
-    add_norm: bool
     dtype: Any = jnp.float32
 
     @nn.compact
@@ -88,8 +96,7 @@ class ConvNextBlock(nn.Module):
         )(time_embeddings)
         time_embeddings = rearrange(time_embeddings, "b c -> b 1 1 c")
         h = h + time_embeddings
-        if self.add_norm:
-            h = nn.LayerNorm(dtype=self.dtype, use_scale=False)(h)
+        h = nn.LayerNorm(dtype=self.dtype, use_scale=False)(h)
         h = ACT2FN(self.config.activation_function)(h)
         h = conv(kernel_size=(1, 1))(h)
         return x + h
@@ -112,7 +119,9 @@ class ImgDiffusionModule(nn.Module):
 
         # U-net
         hidden_states = []
-        for ch_mult in self.config.channel_mult:
+        for layer, (ch_mult, attention_block) in enumerate(
+            zip(self.config.channel_mult, self.config.attention_block)
+        ):
             channels = self.config.model_channels * ch_mult
             for _ in range(self.config.blocks_per_layer):
                 x = ConvNextBlock(
@@ -120,19 +129,28 @@ class ImgDiffusionModule(nn.Module):
                     channels=channels,
                     dtype=self.dtype,
                 )(x, time_embedding, deterministic=deterministic)
+                if attention_block:
+                    x = AttentionBlock(config=self.config, dtype=self.dtype)(
+                        x, deterministic=deterministic
+                    )
 
-            # append to hidden states
-            hidden_states.append(x)
+            if layer < len(self.config.channel_mult) - 1:
+                # append to hidden states
+                hidden_states.append(x)
 
-            # downsample
-            x = nn.Conv(
-                features=channels,
-                kernel_size=(3, 3),
-                strides=2,
-                padding=1,
-                use_bias=self.config.use_bias,
-                dtype=self.dtype,
-            )(x)
+                # downsample
+                x = nn.Conv(
+                    features=channels,
+                    kernel_size=(3, 3),
+                    strides=2,
+                    padding=1,
+                    use_bias=self.config.use_bias,
+                    dtype=self.dtype,
+                )(x)
+
+        # mid blocks
+
+        # upsample
 
         return x
 
