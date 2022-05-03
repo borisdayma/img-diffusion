@@ -148,9 +148,41 @@ class ImgDiffusionModule(nn.Module):
                     dtype=self.dtype,
                 )(x)
 
-        # mid blocks
+        for ch_mult, attention_block in reversed(
+            zip(self.config.channel_mult[:-1], self.config.attention_block[:-1])
+        ):
+            channels = self.config.model_channels * ch_mult
 
-        # upsample
+            # upsample
+            x = nn.ConvTranspose(
+                features=channels,
+                kernel_size=(3, 3),
+                strides=2,
+                padding=1,
+                use_bias=self.config.use_bias,
+                dtype=self.dtype,
+            )(x)
+
+            # skip connection
+            x = x + hidden_states.pop()
+
+            for _ in range(self.config.blocks_per_layer):
+                x = ConvNextBlock(
+                    config=self.config,
+                    channels=channels,
+                    dtype=self.dtype,
+                )(x, time_embedding, deterministic=deterministic)
+                if attention_block:
+                    x = AttentionBlock(config=self.config, dtype=self.dtype)(
+                        x, deterministic=deterministic
+                    )
+        # final output
+        x = nn.Conv(
+            features=self.config.model_channels,
+            kernel_size=(1, 1),
+            use_bias=self.config.use_bias,
+            dtype=self.dtype,
+        )(x)
 
         return x
 
