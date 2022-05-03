@@ -10,6 +10,7 @@ from flax.core.frozen_dict import unfreeze
 from flax.traverse_util import flatten_dict, unflatten_dict
 from transformers import FlaxPreTrainedModel
 from transformers.modeling_flax_utils import ACT2FN, FlaxPreTrainedModel
+from transformers.models.bart.modeling_flax_bart import FlaxBartAttention
 from transformers.utils import logging
 
 from .configuration import ImgDiffusionConfig
@@ -58,10 +59,27 @@ class TimeEmbedding(nn.Module):
 
 class AttentionBlock(nn.Module):
     config: ImgDiffusionConfig
+    channels: int
+    num_heads: int
     dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x):
+        # check channels is divisible by num_heads
+        assert (
+            self.channels % self.num_heads == 0
+        ), f"channels must be divisible by num_heads, but got {self.channels} and {self.num_heads}"
+        b, h, w, c = x.shape
+
+        norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
+        x = norm()(x)
+
+        # flatten
+
+        # attention
+
+        # reshape
+
         return x
 
 
@@ -81,7 +99,7 @@ class ConvNextBlock(nn.Module):
             dtype=self.dtype,
         )
         norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
-        h = norm(x)
+        h = norm()(x)
         h = ACT2FN(self.config.activation_function)(h)
         h = conv(
             kernel_size=(7, 7),
@@ -96,7 +114,7 @@ class ConvNextBlock(nn.Module):
         )(time_embeddings)
         time_embeddings = rearrange(time_embeddings, "b c -> b 1 1 c")
         h = h + time_embeddings
-        h = nn.LayerNorm(dtype=self.dtype, use_scale=False)(h)
+        h = norm()(h)
         h = ACT2FN(self.config.activation_function)(h)
         h = conv(kernel_size=(1, 1))(h)
         return x + h
@@ -112,6 +130,7 @@ class ImgDiffusionModule(nn.Module):
         assert (
             x.shape == img_inputs.shape
         ), f"x and img_inputs must have the same shape, but got {x.shape} and {img_inputs.shape}"
+        b, h, w, c = x.shape
         x = jnp.concatenate([x, img_inputs], axis=1)
 
         # time embedding
@@ -178,7 +197,7 @@ class ImgDiffusionModule(nn.Module):
                     )
         # final output
         x = nn.Conv(
-            features=self.config.model_channels,
+            features=c,
             kernel_size=(1, 1),
             use_bias=self.config.use_bias,
             dtype=self.dtype,
