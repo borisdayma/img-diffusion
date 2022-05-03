@@ -9,8 +9,7 @@ from einops import rearrange
 from flax.core.frozen_dict import unfreeze
 from flax.traverse_util import flatten_dict, unflatten_dict
 from transformers import FlaxPreTrainedModel
-from transformers.modeling_flax_utils import ACT2FN, FlaxPreTrainedModel
-from transformers.models.bart.modeling_flax_bart import FlaxBartAttention
+from transformers.modeling_flax_utils import ACT2FN
 from transformers.utils import logging
 
 from .configuration import ImgDiffusionConfig
@@ -59,26 +58,34 @@ class TimeEmbedding(nn.Module):
 
 class AttentionBlock(nn.Module):
     config: ImgDiffusionConfig
-    channels: int
-    num_heads: int
     dtype: Any = jnp.float32
 
     @nn.compact
-    def __call__(self, x):
-        # check channels is divisible by num_heads
-        assert (
-            self.channels % self.num_heads == 0
-        ), f"channels must be divisible by num_heads, but got {self.channels} and {self.num_heads}"
+    def __call__(self, x, deterministic: bool = True):
         b, h, w, c = x.shape
 
         norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
         x = norm()(x)
 
         # flatten
+        x = rearrange(x, "b h w c -> b hw c")
 
         # attention
+        attention = partial(
+            nn.attention.MultiHeadDotProductAttention,
+            num_heads=self.config.num_heads,
+            dtype=self.dtype,
+            use_bias=self.config.use_bias,
+            dropout_rate=self.config.attention_dropout,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )
+        x = attention()(inputs_q=x, inputs_kv=x, deterministic=deterministic)
 
-        # reshape
+        # TODO: add cross-attention with text embedding
+
+        # reshape and norm
+        x = rearrange(x, "b hw c -> b h w c", h=h)
+        x = norm()(x)
 
         return x
 
@@ -89,7 +96,7 @@ class ConvNextBlock(nn.Module):
     dtype: Any = jnp.float32
 
     @nn.compact
-    def __call__(self, x, time_embeddings):
+    def __call__(self, x, time_embeddings, deterministic: bool = True):
         conv = partial(
             nn.Conv,
             features=self.channels,
@@ -116,6 +123,9 @@ class ConvNextBlock(nn.Module):
         h = h + time_embeddings
         h = norm()(h)
         h = ACT2FN(self.config.activation_function)(h)
+        h = nn.Dropout(rate=self.config.activation_dropout)(
+            h, deterministic=deterministic
+        )
         h = conv(kernel_size=(1, 1))(h)
         return x + h
 
@@ -148,8 +158,14 @@ class ImgDiffusionModule(nn.Module):
                     channels=channels,
                     dtype=self.dtype,
                 )(x, time_embedding, deterministic=deterministic)
+                x = nn.Dropout(rate=self.config.activation_dropout)(
+                    x, deterministic=deterministic
+                )
                 if attention_block:
                     x = AttentionBlock(config=self.config, dtype=self.dtype)(
+                        x, deterministic=deterministic
+                    )
+                    x = nn.Dropout(rate=self.config.activation_dropout)(
                         x, deterministic=deterministic
                     )
 
@@ -166,6 +182,9 @@ class ImgDiffusionModule(nn.Module):
                     use_bias=self.config.use_bias,
                     dtype=self.dtype,
                 )(x)
+                x = nn.Dropout(rate=self.config.activation_dropout)(
+                    x, deterministic=deterministic
+                )
 
         for ch_mult, attention_block in reversed(
             zip(self.config.channel_mult[:-1], self.config.attention_block[:-1])
@@ -181,6 +200,9 @@ class ImgDiffusionModule(nn.Module):
                 use_bias=self.config.use_bias,
                 dtype=self.dtype,
             )(x)
+            x = nn.Dropout(rate=self.config.activation_dropout)(
+                x, deterministic=deterministic
+            )
 
             # skip connection
             x = x + hidden_states.pop()
@@ -191,8 +213,14 @@ class ImgDiffusionModule(nn.Module):
                     channels=channels,
                     dtype=self.dtype,
                 )(x, time_embedding, deterministic=deterministic)
+                x = nn.Dropout(rate=self.config.activation_dropout)(
+                    x, deterministic=deterministic
+                )
                 if attention_block:
                     x = AttentionBlock(config=self.config, dtype=self.dtype)(
+                        x, deterministic=deterministic
+                    )
+                    x = nn.Dropout(rate=self.config.activation_dropout)(
                         x, deterministic=deterministic
                     )
         # final output
