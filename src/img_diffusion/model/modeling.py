@@ -61,7 +61,7 @@ class AttentionBlock(nn.Module):
     dtype: Any = jnp.float32
 
     @nn.compact
-    def __call__(self, x, deterministic: bool = True):
+    def __call__(self, x, encoder_outputs=None, deterministic: bool = True):
         b, h, w, c = x.shape
 
         norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
@@ -81,7 +81,15 @@ class AttentionBlock(nn.Module):
         )
         x = attention()(inputs_q=x, inputs_kv=x, deterministic=deterministic)
 
-        # TODO: add cross-attention with text embedding
+        # cross-attention
+        if encoder_outputs is not None:
+            enc_b, enc_dim, enc_c = encoder_outputs.shape
+            assert (
+                enc_dim == h * w
+            ), f"encoder_outputs must have the same dim as height x width, but got {enc_dim} and {h} * {w}"
+            x = attention()(
+                inputs_q=x, inputs_kv=encoder_outputs, deterministic=deterministic
+            )
 
         # reshape and norm
         x = rearrange(x, "b hw c -> b h w c", h=h)
