@@ -154,6 +154,10 @@ class ImgDiffusionModule(nn.Module):
         # time embedding
         time_embedding = TimeEmbedding(config=self.config, dtype=self.dtype)(timesteps)
 
+        # TODO: support text input
+        # - add to time_embedding
+        # - add projection as cross-attention
+
         # U-net
         hidden_states = []
         for layer, (ch_mult, attention_block) in enumerate(
