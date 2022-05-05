@@ -98,7 +98,7 @@ class AttentionBlock(nn.Module):
         return x
 
 
-class ConvNextBlock(nn.Module):
+class ResBlock(nn.Module):
     config: ImgDiffusionConfig
     channels: int
     dtype: Any = jnp.float32
@@ -108,6 +108,7 @@ class ConvNextBlock(nn.Module):
         conv = partial(
             nn.Conv,
             features=self.channels,
+            kernel_size=(3, 3),
             strides=1,
             padding="SAME",
             use_bias=self.config.use_bias,
@@ -116,10 +117,7 @@ class ConvNextBlock(nn.Module):
         norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
         h = norm()(x)
         h = ACT2FN(self.config.activation_function)(h)
-        h = conv(
-            kernel_size=(7, 7),
-            feature_group_count=self.channels,
-        )(h)
+        h = conv()(h)
         time_embeddings = ACT2FN(self.config.activation_function)(time_embeddings)
         time_embeddings = nn.Dense(
             features=self.channels,
@@ -134,7 +132,7 @@ class ConvNextBlock(nn.Module):
         h = nn.Dropout(rate=self.config.activation_dropout)(
             h, deterministic=deterministic
         )
-        h = conv(kernel_size=(1, 1))(h)
+        h = conv()(h)
         return x + h
 
 
@@ -165,7 +163,7 @@ class ImgDiffusionModule(nn.Module):
         ):
             channels = self.config.model_channels * ch_mult
             for _ in range(self.config.blocks_per_layer):
-                x = ConvNextBlock(
+                x = ResBlock(
                     config=self.config,
                     channels=channels,
                     dtype=self.dtype,
@@ -220,7 +218,7 @@ class ImgDiffusionModule(nn.Module):
             x = x + hidden_states.pop()
 
             for _ in range(self.config.blocks_per_layer):
-                x = ConvNextBlock(
+                x = ResBlock(
                     config=self.config,
                     channels=channels,
                     dtype=self.dtype,
