@@ -114,7 +114,7 @@ class ResBlock(nn.Module):
             use_bias=self.config.use_bias,
             dtype=self.dtype,
         )
-        norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
+        norm = partial(nn.GroupNorm, num_groups=32, dtype=self.dtype, use_scale=False)
         h = norm()(x)
         h = ACT2FN(self.config.activation_function)(h)
         h = conv()(h)
