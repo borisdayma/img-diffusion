@@ -8,11 +8,13 @@ Not sure yet, still not ready.
 
 ## References
 
-This repository is heavily inspired by:
+This repository is heavily inspired by following Github repositories:
 
-* Phil Wang's [denoising-image-diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch), in particular the use of [ConvNexts](https://arxiv.org/abs/2201.03545)
-* [GLIDE: Towards Photorealistic Image Generation and Editing with Text-Guided Diffusion Models](https://arxiv.org/abs/2112.10741)
-* Cristian Garcia's [ddpm-jax](https://github.com/cgarciae/ddpm-jax)
+* [openai/glide-text2im](https://github.com/openai/glide-text2im)
+* [lucidrains/denoising-image-diffusion](https://github.com/lucidrains/denoising-diffusion-pytorch), in particular the use of [ConvNexts](https://arxiv.org/abs/2201.03545)
+* [Janspiry/Palette-Image-to-Image-Diffusion-Models](https://github.com/Janspiry/Palette-Image-to-Image-Diffusion-Models)
+* [cgarciae/ddpm-jax](https://github.com/cgarciae/ddpm-jax)
+* [nshepperd/jax-guided-diffusion](https://github.com/nshepperd/jax-guided-diffusion)
 
 ### Citations
 
