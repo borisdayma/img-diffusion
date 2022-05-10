@@ -147,7 +147,7 @@ class ImgDiffusionModule(nn.Module):
             x.shape == img_inputs.shape
         ), f"x and img_inputs must have the same shape, but got {x.shape} and {img_inputs.shape}"
         b, h, w, c = x.shape
-        x = jnp.concatenate([x, img_inputs], axis=1)
+        x = jnp.concatenate([x, img_inputs], axis=-1)
 
         # time embedding
         time_embedding = TimeEmbedding(config=self.config, dtype=self.dtype)(timesteps)
