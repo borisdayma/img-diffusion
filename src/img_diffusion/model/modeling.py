@@ -68,7 +68,7 @@ class AttentionBlock(nn.Module):
         x = norm()(x)
 
         # flatten
-        x = rearrange(x, "b h w c -> b hw c")
+        x = rearrange(x, "b h w c -> b (h w) c")
 
         # attention
         attention = partial(
@@ -92,7 +92,7 @@ class AttentionBlock(nn.Module):
             )
 
         # reshape and norm
-        x = rearrange(x, "b hw c -> b h w c", h=h)
+        x = rearrange(x, "b (h w) c -> b h w c", h=h)
         x = norm()(x)
 
         return x
@@ -162,7 +162,7 @@ class ImgDiffusionModule(nn.Module):
             zip(self.config.channel_mult, self.config.attention_block)
         ):
             channels = self.config.model_channels * ch_mult
-            for _ in range(self.config.blocks_per_layer):
+            for idx in range(self.config.blocks_per_layer):
                 x = ResBlock(
                     config=self.config,
                     channels=channels,
@@ -171,7 +171,7 @@ class ImgDiffusionModule(nn.Module):
                 x = nn.Dropout(rate=self.config.activation_dropout)(
                     x, deterministic=deterministic
                 )
-                if attention_block:
+                if attention_block and idx < self.config.blocks_per_layer - 1:
                     x = AttentionBlock(config=self.config, dtype=self.dtype)(
                         x, deterministic=deterministic
                     )
@@ -217,7 +217,7 @@ class ImgDiffusionModule(nn.Module):
             # skip connection
             x = x + hidden_states.pop()
 
-            for _ in range(self.config.blocks_per_layer):
+            for idx in range(self.config.blocks_per_layer):
                 x = ResBlock(
                     config=self.config,
                     channels=channels,
@@ -226,7 +226,7 @@ class ImgDiffusionModule(nn.Module):
                 x = nn.Dropout(rate=self.config.activation_dropout)(
                     x, deterministic=deterministic
                 )
-                if attention_block:
+                if attention_block and idx < self.config.blocks_per_layer - 1:
                     x = AttentionBlock(config=self.config, dtype=self.dtype)(
                         x, deterministic=deterministic
                     )
