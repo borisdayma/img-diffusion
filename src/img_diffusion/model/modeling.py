@@ -58,22 +58,23 @@ class TimeEmbedding(nn.Module):
 
 class AttentionBlock(nn.Module):
     config: ImgDiffusionConfig
+    num_heads: int
     dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x, encoder_outputs=None, deterministic: bool = True):
-        b, h, w, c = x.shape
-
         norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
         x = norm()(x)
 
         # flatten
-        x = rearrange(x, "b h w c -> b (h w) c")
+        if x.ndim == 4:
+            b, h, w, c = x.shape
+            x = rearrange(x, "b h w c -> b (h w) c")
 
         # attention
         attention = partial(
             nn.attention.MultiHeadDotProductAttention,
-            num_heads=self.config.num_heads,
+            num_heads=self.num_heads,
             dtype=self.dtype,
             use_bias=self.config.use_bias,
             dropout_rate=self.config.attention_dropout,
@@ -82,17 +83,16 @@ class AttentionBlock(nn.Module):
         x = attention()(inputs_q=x, inputs_kv=x, deterministic=deterministic)
 
         # cross-attention
-        if encoder_outputs is not None:
-            enc_b, enc_dim, enc_c = encoder_outputs.shape
-            assert (
-                enc_dim == h * w
-            ), f"encoder_outputs must have the same dim as height x width, but got {enc_dim} and {h} * {w}"
+        if encoder_outputs is not None and self.config.use_cross_attention:
             x = attention()(
                 inputs_q=x, inputs_kv=encoder_outputs, deterministic=deterministic
             )
 
-        # reshape and norm
-        x = rearrange(x, "b (h w) c -> b h w c", h=h)
+        # reshape
+        if x.ndim == 4:
+            x = rearrange(x, "b (h w) c -> b h w c", h=h)
+
+        # norm
         x = norm()(x)
 
         return x
@@ -136,6 +136,110 @@ class ResBlock(nn.Module):
         return x + h
 
 
+class GLU(nn.Module):
+    config: ImgDiffusionConfig
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
+        dense = partial(
+            nn.Dense,
+            self.config.text_ffn_dim,
+            dtype=self.dtype,
+            use_bias=self.config.use_bias,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )
+        x = norm()(x)
+        w = dense()(x)
+        w = ACT2FN[self.config.activation_function](w)
+        v = dense()(x)
+        x = w * v
+        x = norm()(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+        x = dense()(x)
+        x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
+        return x
+
+
+class TransformerLayer(nn.Module):
+    config: ImgDiffusionConfig
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, hidden_states, deterministic: bool = True):
+        # attention
+        x = AttentionBlock(
+            config=self.config, num_heads=self.config.text_heads, dtype=self.dtype
+        )(x, deterministic=deterministic)
+        hidden_states = hidden_states + x
+
+        # ffn
+        x = GLU(config=self.config, dtype=self.dtype)(
+            hidden_states, deterministic=deterministic
+        )
+        hidden_states = hidden_states + x
+
+        return (hidden_states, None)
+
+
+class Transformer(nn.Module):
+    config: ImgDiffusionConfig
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, input_ids, deterministic: bool = True):
+        input_shape = input_ids.shape
+        assert input_shape[-1] == self.config.max_text_length
+        input_ids = input_ids.reshape(-1, input_shape[-1])
+
+        embed = partial(
+            nn.Embed,
+            features=self.config.text_dim,
+            dtype=self.dtype,
+            embedding_init=jax.nn.initializers.normal(self.config.init_std),
+        )
+        inputs_embeds = embed(
+            num_embeddings=self.config.vocab_size,
+        )(input_ids)
+
+        batch_size, sequence_length = input_ids.shape
+        position_ids = jnp.broadcast_to(
+            jnp.arange(sequence_length)[None, :], (batch_size, sequence_length)
+        )
+        embed_pos = embed(num_embeddings=self.config.max_text_length)(position_ids)
+
+        hidden_states = inputs_embeds + embed_pos
+
+        norm = partial(nn.LayerNorm, dtype=self.dtype)
+
+        hidden_states = norm(hidden_states, use_scale=True)
+        hidden_states = nn.Dropout(rate=self.config.dropout)(
+            hidden_states, deterministic=deterministic
+        )
+
+        # layers
+        hidden_states = (hidden_states,)
+        hidden_states, _ = nn.scan(
+            TransformerLayer,
+            variable_axes={"params": 0},
+            split_rngs={"params": True, "dropout": True},
+            in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
+            length=self.config.text_layers,
+        )(self.config, dtype=self.dtype, name="layers",)(
+            hidden_states,
+            deterministic,
+        )
+        hidden_states = hidden_states[0]
+
+        # final norm
+        hidden_states = norm(hidden_states, use_scale=False)
+
+        return hidden_states
+
+
 class ImgDiffusionModule(nn.Module):
     config: ImgDiffusionConfig
     dtype: jnp.dtype = jnp.float32
@@ -162,9 +266,22 @@ class ImgDiffusionModule(nn.Module):
         # time embedding
         time_embedding = TimeEmbedding(config=self.config, dtype=self.dtype)(timesteps)
 
-        # TODO: support text input
-        # - add to time_embedding
-        # - add projection as cross-attention
+        # compute text embeddings
+        if text_inputs is not None:
+            # TODO: avoid recomputing text embedding at each diffusion step (cache or separate functions)
+            text_inputs = Transformer(config=self.config, dtype=self.dtype)(text_inputs)
+
+            # add to time embedding
+            text_c = text_inputs.shape[-1]
+            time_c = time_embedding.shape[-1]
+            if text_c != time_c:
+                text_proj = nn.Dense(
+                    time_c,
+                    dtype=self.dtype,
+                    use_bias=self.config.use_bias,
+                    kernel_init=jax.nn.initializers.normal(self.config.init_std),
+                )(text_inputs)
+            time_embedding += text_proj
 
         # U-net
         hidden_states = []
@@ -173,6 +290,7 @@ class ImgDiffusionModule(nn.Module):
         ):
             channels = self.config.model_channels * ch_mult
             for idx in range(self.config.blocks_per_layer):
+                # TODO: we should scan when no attention layer
                 x = ResBlock(
                     config=self.config,
                     channels=channels,
@@ -182,9 +300,12 @@ class ImgDiffusionModule(nn.Module):
                     x, deterministic=deterministic
                 )
                 if attention_block and idx < self.config.blocks_per_layer - 1:
-                    x = AttentionBlock(config=self.config, dtype=self.dtype)(
-                        x, deterministic=deterministic
-                    )
+                    c = x.shape[-1]
+                    x = AttentionBlock(
+                        config=self.config,
+                        num_heads=c // self.config.num_head_channels,
+                        dtype=self.dtype,
+                    )(x, encoder_outputs=text_inputs, deterministic=deterministic)
                     x = nn.Dropout(rate=self.config.activation_dropout)(
                         x, deterministic=deterministic
                     )
@@ -237,9 +358,12 @@ class ImgDiffusionModule(nn.Module):
                     x, deterministic=deterministic
                 )
                 if attention_block and idx < self.config.blocks_per_layer - 1:
-                    x = AttentionBlock(config=self.config, dtype=self.dtype)(
-                        x, deterministic=deterministic
-                    )
+                    c = x.shape[-1]
+                    x = AttentionBlock(
+                        config=self.config,
+                        num_heads=c // self.config.num_head_channels,
+                        dtype=self.dtype,
+                    )(x, encoder_outputs=text_embeds, deterministic=deterministic)
                     x = nn.Dropout(rate=self.config.activation_dropout)(
                         x, deterministic=deterministic
                     )
@@ -265,22 +389,3 @@ class ImgDiffusion(PretrainedFromWandbMixin, FlaxPreTrainedModel):
             lambda param: param.size, flatten_dict(unfreeze(params))
         ).values()
         return sum(list(num_params))
-
-    def unscan(self, params):
-        if self.config.use_scan:
-            self.config.use_scan = False
-            params = flatten_dict(params)
-            scanned_keys = [k for k in params.keys() if "layers" in k]
-            for k in scanned_keys:
-                v = params[k]
-                name_idx = k.index("layers") + 1
-                for i in range(len(v)):
-                    new_k = (
-                        *k[:name_idx],
-                        f"{k[name_idx][:-1]}_{i}",
-                        *k[name_idx + 1 :],
-                    )
-                    params[new_k] = v[i]
-                del params[k]
-            params = unflatten_dict(params)
-        return params
