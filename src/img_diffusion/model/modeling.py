@@ -141,13 +141,23 @@ class ImgDiffusionModule(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     @nn.compact
-    def __call__(self, x, img_inputs, timesteps, deterministic: bool = True):
-        # concatenate x with image input
-        assert (
-            x.shape == img_inputs.shape
-        ), f"x and img_inputs must have the same shape, but got {x.shape} and {img_inputs.shape}"
+    def __call__(
+        self,
+        x,
+        timesteps,
+        deterministic: bool = True,
+        img_inputs=None,
+        text_inputs=None,
+    ):
         b, h, w, c = x.shape
-        x = jnp.concatenate([x, img_inputs], axis=-1)
+
+        if img_inputs is not None:
+            # concatenate x with image input
+            assert (
+                x.shape[:2] == img_inputs.shape[:2]
+            ), f"x and img_inputs must have same batch, width, height, but got {x.shape} and {img_inputs.shape}"
+
+            x = jnp.concatenate([x, img_inputs], axis=-1)
 
         # time embedding
         time_embedding = TimeEmbedding(config=self.config, dtype=self.dtype)(timesteps)
