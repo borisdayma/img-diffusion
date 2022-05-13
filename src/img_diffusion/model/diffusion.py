@@ -159,7 +159,8 @@ class GaussianDiffusion:
 
         B, C = x.shape[:2]
         assert t.shape == (B,)
-        model_output = model(x, t, **model_kwargs)
+        gamma = _extract_into_tensor(self.alphas_cumprod, t, (1, 1))
+        model_output = model(x, gamma, **model_kwargs)
         if isinstance(model_output, tuple):
             model_output, extra = model_output
         else:
@@ -330,7 +331,7 @@ class GaussianDiffusion:
         indices = list(range(self.num_timesteps))[::-1]
 
         def _loop_fn(i, img_i):
-            t = jnp.array([i] * shape[0])
+            t = jnp.array([indices[i]] * shape[0])
             out = self.p_sample(
                 model,
                 img_i,
@@ -340,10 +341,9 @@ class GaussianDiffusion:
                 cond_fn=cond_fn,
                 model_kwargs=model_kwargs,
             )
-            return out["sample"], None
+            return out["sample"]
 
-        # TODO: use jax for loop
-        raise Exception("Not implemented")
+        sample = jax.lax.fori_loop(0, self.num_timesteps, _loop_fn, img)
 
         return sample
 
