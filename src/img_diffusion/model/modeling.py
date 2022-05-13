@@ -363,7 +363,7 @@ class ImgDiffusionModule(nn.Module):
                         config=self.config,
                         num_heads=c // self.config.num_head_channels,
                         dtype=self.dtype,
-                    )(x, encoder_outputs=text_embeds, deterministic=deterministic)
+                    )(x, encoder_outputs=text_inputs, deterministic=deterministic)
                     x = nn.Dropout(rate=self.config.activation_dropout)(
                         x, deterministic=deterministic
                     )
