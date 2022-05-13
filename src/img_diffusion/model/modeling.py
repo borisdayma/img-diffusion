@@ -369,7 +369,7 @@ class ImgDiffusionModule(nn.Module):
                     )
         # final output
         x = nn.Conv(
-            features=2 * c,
+            features=c,
             kernel_size=(1, 1),
             use_bias=self.config.use_bias,
             dtype=self.dtype,
