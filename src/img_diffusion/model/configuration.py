@@ -11,7 +11,6 @@ class ImgDiffusionConfig(PretrainedFromWandbMixin, PretrainedConfig):
 
     def __init__(
         self,
-        loss="l2",  # can be l1 or l2
         model_channels=32,
         channel_mult=(1, 2, 4, 8),
         attention_block=(False, False, False, True),
@@ -32,8 +31,6 @@ class ImgDiffusionConfig(PretrainedFromWandbMixin, PretrainedConfig):
         use_cross_attention=False,
         **kwargs,
     ):
-        assert loss in ["l1", "l2"], "loss must be either l1 or l2"
-        self.loss = loss
         self.model_channels = model_channels
         self.channel_mult = channel_mult
         self.attention_block = attention_block
