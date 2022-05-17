@@ -2,7 +2,7 @@ import numpy as np
 import math
 import jax.numpy as jnp
 import jax
-import flax.linen as nn
+from tqdm import trange
 
 
 def cosine_beta_schedule(timesteps, s=0.008):
@@ -368,7 +368,7 @@ class GaussianDiffusion:
             jax.random.normal(key=key, shape=shape)
         indices = list(range(self.num_timesteps))[::-1]
 
-        for i in range(self.num_timesteps):
+        for i in trange(self.num_timesteps):
             t = jnp.array([indices[i]] * shape[0])
             out = self.p_sample(
                 model,
