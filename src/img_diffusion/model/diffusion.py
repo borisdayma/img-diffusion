@@ -347,6 +347,41 @@ class GaussianDiffusion:
 
         return sample
 
+    def p_sample_loop_progressive(
+        self,
+        key,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+    ):
+        """
+        Generate samples from the model like p_sample_loop but yield each intermediate result.
+        """
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            jax.random.normal(key=key, shape=shape)
+        indices = list(range(self.num_timesteps))[::-1]
+
+        for i in range(self.num_timesteps):
+            t = jnp.array([indices[i]] * shape[0])
+            out = self.p_sample(
+                model,
+                img,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+            )
+            img = out["sample"]
+            yield img
+
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape, dtype=jnp.float32):
     """
