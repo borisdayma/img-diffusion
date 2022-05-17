@@ -137,6 +137,32 @@ class ResBlock(nn.Module):
         return x + h
 
 
+class FFN(nn.Module):
+    config: ImgDiffusionConfig
+    dtype: jnp.dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        norm = partial(nn.LayerNorm, dtype=self.dtype, use_scale=False)
+        dense = partial(
+            nn.Dense,
+            self.config.text_ffn_dim,
+            dtype=self.dtype,
+            use_bias=self.config.use_bias,
+            kernel_init=jax.nn.initializers.normal(self.config.init_std),
+        )
+        x = norm()(x)
+        x = dense()(x)
+        x = ACT2FN[self.config.activation_function](x)
+        x = norm()(x)
+        x = nn.Dropout(rate=self.config.activation_dropout)(
+            x, deterministic=deterministic
+        )
+        x = dense()(x)
+        x = nn.Dropout(rate=self.config.dropout)(x, deterministic=deterministic)
+        return x
+
+
 class GLU(nn.Module):
     config: ImgDiffusionConfig
     dtype: jnp.dtype = jnp.float32
@@ -178,9 +204,14 @@ class TransformerLayer(nn.Module):
         hidden_states = hidden_states + x
 
         # ffn
-        x = GLU(config=self.config, dtype=self.dtype)(
-            hidden_states, deterministic=deterministic
-        )
+        if self.config.use_glu:
+            x = GLU(config=self.config, dtype=self.dtype)(
+                hidden_states, deterministic=deterministic
+            )
+        else:
+            x = FFN(config=self.config, dtype=self.dtype)(
+                hidden_states, deterministic=deterministic
+            )
         hidden_states = hidden_states + x
 
         return (hidden_states, None)

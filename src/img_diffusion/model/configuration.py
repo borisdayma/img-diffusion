@@ -28,6 +28,7 @@ class ImgDiffusionConfig(PretrainedFromWandbMixin, PretrainedConfig):
         text_ffn_dim=1024,
         text_layers=12,
         max_text_length=64,
+        use_glu=True,
         use_cross_attention=False,
         **kwargs,
     ):
@@ -51,5 +52,6 @@ class ImgDiffusionConfig(PretrainedFromWandbMixin, PretrainedConfig):
         self.text_ffn_dim = text_ffn_dim
         self.text_layers = text_layers
         self.max_text_length = max_text_length
+        self.use_glu = use_glu
         self.use_cross_attention = use_cross_attention
         super().__init__(**kwargs)
