@@ -19,6 +19,7 @@ logger = logging.get_logger(__name__)
 
 
 def timestep_embedding(timesteps, dim, max_period=10_000):
+    SCALING_FACTOR = 5_000  # input scale is [0, 1]
     half = dim // 2
     freqs = jnp.exp(
         -math.log(max_period)
@@ -26,7 +27,7 @@ def timestep_embedding(timesteps, dim, max_period=10_000):
         / half
     )
 
-    args = timesteps[:None].astype(jnp.float32) * freqs[None, :]
+    args = timesteps[:None].astype(jnp.float32) * freqs[None, :] * SCALING_FACTOR
     embedding = jnp.concatenate([jnp.sin(args), jnp.cos(args)], axis=-1)
     if dim % 2:
         embedding = jnp.concatenate(
