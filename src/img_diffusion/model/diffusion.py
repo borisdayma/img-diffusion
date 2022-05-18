@@ -3,6 +3,7 @@ import math
 import jax.numpy as jnp
 import jax
 from tqdm import trange
+import optax
 
 
 def cosine_beta_schedule(timesteps, s=0.008):
@@ -327,12 +328,14 @@ class GaussianDiffusion:
         if noise is not None:
             img = noise
         else:
-            jax.random.normal(key=key, shape=shape)
+            img = jax.random.normal(key=key, shape=shape)
         indices = list(range(self.num_timesteps))[::-1]
 
         def _loop_fn(i, img_i):
             t = jnp.array([indices[i]] * shape[0])
+            key, key_sample = jax.random.split(key, 2)
             out = self.p_sample(
+                key_sample,
                 model,
                 img_i,
                 t,
@@ -344,7 +347,6 @@ class GaussianDiffusion:
             return out["sample"]
 
         sample = jax.lax.fori_loop(0, self.num_timesteps, _loop_fn, img)
-
         return sample
 
     def p_sample_loop_progressive(
@@ -365,12 +367,14 @@ class GaussianDiffusion:
         if noise is not None:
             img = noise
         else:
-            jax.random.normal(key=key, shape=shape)
+            img = jax.random.normal(key=key, shape=shape)
         indices = list(range(self.num_timesteps))[::-1]
 
         for i in trange(self.num_timesteps):
             t = jnp.array([indices[i]] * shape[0])
+            key, key_sample = jax.random.split(key, 2)
             out = self.p_sample(
+                key_sample,
                 model,
                 img,
                 t,
@@ -381,6 +385,210 @@ class GaussianDiffusion:
             )
             img = out["sample"]
             yield img
+
+    def ddim_sample(
+        self,
+        key,
+        model,
+        x,
+        t,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        eta=0.0,
+    ):
+        """
+        Sample x_{t-1} from the model using DDIM.
+
+        Same usage as p_sample().
+        """
+        out = self.p_mean_variance(
+            model,
+            x,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+        if cond_fn is not None:
+            out = self.condition_score(cond_fn, out, x, t, model_kwargs=model_kwargs)
+
+        # Usually our model outputs epsilon, but we re-derive it
+        # in case we used x_start or x_prev prediction.
+        # Also can be useful using denoised_fn (such as inpainting)
+        eps = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
+
+        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
+        alpha_bar_prev = _extract_into_tensor(self.alphas_cumprod_prev, t, x.shape)
+        sigma = (
+            eta
+            * jnp.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
+            * jnp.sqrt(1 - alpha_bar / alpha_bar_prev)
+        )
+        # Equation 12.
+        noise = jax.random.normal(key=key, shape=x.shape)
+        mean_pred = (
+            out["pred_xstart"] * jnp.sqrt(alpha_bar_prev)
+            + jnp.sqrt(1 - alpha_bar_prev - sigma**2) * eps
+        )
+        nonzero_mask = (
+            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
+        )  # no noise when t == 0
+        sample = mean_pred + nonzero_mask * sigma * noise
+        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+
+    def ddim_reverse_sample(
+        self,
+        key,
+        model,
+        x,
+        t,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        eta=0.0,
+    ):
+        """
+        Sample x_{t+1} from the model using DDIM reverse ODE.
+        """
+        assert eta == 0.0, "Reverse ODE only for deterministic path"
+        out = self.p_mean_variance(
+            model,
+            x,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+        if cond_fn is not None:
+            out = self.condition_score(cond_fn, out, x, t, model_kwargs=model_kwargs)
+        # Usually our model outputs epsilon, but we re-derive it
+        # in case we used x_start or x_prev prediction.
+        eps = (
+            _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x.shape) * x
+            - out["pred_xstart"]
+        ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x.shape)
+        alpha_bar_next = _extract_into_tensor(self.alphas_cumprod_next, t, x.shape)
+
+        # Equation 12. reversed
+        mean_pred = (
+            out["pred_xstart"] * jnp.sqrt(alpha_bar_next)
+            + jnp.sqrt(1 - alpha_bar_next) * eps
+        )
+
+        return {"sample": mean_pred, "pred_xstart": out["pred_xstart"]}
+
+    def ddim_sample_loop(
+        self,
+        key,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        eta=0.0,
+    ):
+        """
+        Generate samples from the model using ddim.
+        """
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = jax.random.normal(key=key, shape=shape)
+        indices = list(range(self.num_timesteps))[::-1]
+
+        def _loop_fn(i, img_i):
+            t = jnp.array([indices[i]] * shape[0])
+            key, key_sample = jax.random.split(key, 2)
+            out = self.ddim_sample(
+                key_sample,
+                model,
+                img_i,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+            return out["sample"]
+
+        sample = jax.lax.fori_loop(0, self.num_timesteps, _loop_fn, img)
+        return sample
+
+    def ddim_sample_loop_progressive(
+        self,
+        key,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        eta=0.0,
+    ):
+        """
+        Generate samples from the model like ddim_sample_loop but yield each intermediate result.
+        """
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = jax.random.normal(key=key, shape=shape)
+        indices = list(range(self.num_timesteps))[::-1]
+
+        for i in trange(self.num_timesteps):
+            t = jnp.array([indices[i]] * shape[0])
+            key, key_sample = jax.random.split(key, 2)
+            out = self.ddim_sample(
+                key_sample,
+                model,
+                img,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+                eta=eta,
+            )
+            img = out["sample"]
+            yield img
+
+    def training_losses(self, model, x_start, t, rng, model_kwargs=None, noise=None):
+        """
+        Compute training losses for a single timestep.
+        :param model: the model to evaluate loss on.
+        :param x_start: the [N x C x ...] tensor of inputs.
+        :param t: a batch of timestep indices.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :param noise: if specified, the specific Gaussian noise to try to remove.
+        :return: a dict with the key "loss" containing a tensor of shape [N].
+                 Some mean or variance settings may also have other keys.
+        """
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None:
+            noise = jax.random.normal(rng.split(), x_start.shape)
+        x_t = self.q_sample(x_start, t, noise=noise)
+
+        terms = {}
+
+        # use MSE loss considering eps output
+        model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+        target = noise
+        assert model_output.shape == target.shape == x_start.shape
+
+        # use cross entropy
+
+        terms["mse"] = optax.l2_loss(model_output, target).mean()
+        return terms
 
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape, dtype=jnp.float32):
