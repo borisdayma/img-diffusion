@@ -495,6 +495,7 @@ class GaussianDiffusion:
         """
         Generate samples from the model using ddim.
         """
+        # TODO: refactor as it's same code as p_sample_loop
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
@@ -536,6 +537,7 @@ class GaussianDiffusion:
         """
         Generate samples from the model like ddim_sample_loop but yield each intermediate result.
         """
+        # TODO: refactor as it's same code as p_sample_loop_progressive
         assert isinstance(shape, (tuple, list))
         if noise is not None:
             img = noise
