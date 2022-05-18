@@ -11,6 +11,7 @@ class ImgDiffusionConfig(PretrainedFromWandbMixin, PretrainedConfig):
 
     def __init__(
         self,
+        input_shape=(256, 256, 3),
         model_channels=32,
         channel_mult=(1, 2, 4, 8),
         attention_block=(False, False, False, True),
