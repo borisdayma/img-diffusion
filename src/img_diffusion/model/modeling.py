@@ -414,6 +414,25 @@ class ImgDiffusion(PretrainedFromWandbMixin, FlaxPreTrainedModel):
     module_class = ImgDiffusionModule
     config_class = ImgDiffusionConfig
 
+    def __init__(
+        self,
+        config: ImgDiffusionConfig,
+        seed=0,
+        dtype: jnp.dtype = jnp.float32,
+        _do_init: bool = True,
+        **kwargs,
+    ):
+        input_shape = config.input_shape
+        module = self.module_class(config=config, dtype=dtype, **kwargs)
+        super().__init__(
+            config,
+            module,
+            input_shape=input_shape,
+            seed=seed,
+            dtype=dtype,
+            _do_init=_do_init,
+        )
+
     def num_params(self, params=None):
         if params is None:
             params = self.params
@@ -421,3 +440,18 @@ class ImgDiffusion(PretrainedFromWandbMixin, FlaxPreTrainedModel):
             lambda param: param.size, flatten_dict(unfreeze(params))
         ).values()
         return sum(list(num_params))
+
+    def init_weights(self):
+        raise NotImplementedError
+
+    def condition(self):
+        # perform conditioning pre-processing
+        raise NotImplementedError
+
+    def denoise(self):
+        # perform denoising
+        raise NotImplementedError
+
+    def __call__(self):
+        # condition and denoise
+        raise NotImplementedError
