@@ -18,7 +18,7 @@ from .utils import PretrainedFromWandbMixin
 logger = logging.get_logger(__name__)
 
 
-def timestep_embedding(timesteps, dim, max_period=10_000):
+def gamma_embedding(gamma, dim, max_period=10_000):
     SCALING_FACTOR = 5_000  # input scale is [0, 1]
     half = dim // 2
     freqs = jnp.exp(
@@ -27,7 +27,7 @@ def timestep_embedding(timesteps, dim, max_period=10_000):
         / half
     )
 
-    args = timesteps[:None].astype(jnp.float32) * freqs[None, :] * SCALING_FACTOR
+    args = gamma[:None].astype(jnp.float32) * freqs[None, :] * SCALING_FACTOR
     embedding = jnp.concatenate([jnp.sin(args), jnp.cos(args)], axis=-1)
     if dim % 2:
         embedding = jnp.concatenate(
@@ -36,17 +36,17 @@ def timestep_embedding(timesteps, dim, max_period=10_000):
     return embedding
 
 
-class TimeEmbedding(nn.Module):
+class GammaEmbedding(nn.Module):
     config: ImgDiffusionConfig
     dtype: Any = jnp.float32
 
     @nn.compact
-    def __call__(self, timesteps):
-        time_embed_dim = self.config.model_channels * 4
-        embeddings = timestep_embedding(timesteps, self.config.model_channels)
+    def __call__(self, gamma):
+        gamma_embed_dim = self.config.model_channels * 4
+        embeddings = gamma_embedding(gamma, self.config.model_channels)
         dense = partial(
             nn.Dense,
-            features=time_embed_dim,
+            features=gamma_embed_dim,
             use_bias=self.config.use_bias,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
@@ -105,7 +105,7 @@ class ResBlock(nn.Module):
     dtype: Any = jnp.float32
 
     @nn.compact
-    def __call__(self, x, time_embeddings, deterministic: bool = True):
+    def __call__(self, x, gamma_embeddings, deterministic: bool = True):
         conv = partial(
             nn.Conv,
             features=self.channels,
@@ -119,15 +119,15 @@ class ResBlock(nn.Module):
         h = norm()(x)
         h = ACT2FN(self.config.activation_function)(h)
         h = conv()(h)
-        time_embeddings = ACT2FN(self.config.activation_function)(time_embeddings)
-        time_embeddings = nn.Dense(
+        gamma_embeddings = ACT2FN(self.config.activation_function)(gamma_embeddings)
+        gamma_embeddings = nn.Dense(
             features=self.channels,
             use_bias=self.config.use_bias,
             kernel_init=jax.nn.initializers.normal(self.config.init_std),
             dtype=self.dtype,
-        )(time_embeddings)
-        time_embeddings = rearrange(time_embeddings, "b c -> b 1 1 c")
-        h = h + time_embeddings
+        )(gamma_embeddings)
+        gamma_embeddings = rearrange(gamma_embeddings, "b c -> b 1 1 c")
+        h = h + gamma_embeddings
         h = norm()(h)
         h = ACT2FN(self.config.activation_function)(h)
         h = nn.Dropout(rate=self.config.activation_dropout)(
@@ -280,7 +280,7 @@ class ImgDiffusionModule(nn.Module):
     def __call__(
         self,
         x,
-        timesteps,
+        gamma,
         deterministic: bool = True,
         img_inputs=None,
         text_inputs=None,
@@ -296,7 +296,7 @@ class ImgDiffusionModule(nn.Module):
             x = jnp.concatenate([x, img_inputs], axis=-1)
 
         # time embedding
-        time_embedding = TimeEmbedding(config=self.config, dtype=self.dtype)(timesteps)
+        gamma_embedding = GammaEmbedding(config=self.config, dtype=self.dtype)(gamma)
 
         # compute text embeddings
         if text_inputs is not None:
@@ -305,15 +305,15 @@ class ImgDiffusionModule(nn.Module):
 
             # add to time embedding
             text_c = text_inputs.shape[-1]
-            time_c = time_embedding.shape[-1]
-            if text_c != time_c:
+            gamma_c = gamma_embedding.shape[-1]
+            if text_c != gamma_c:
                 text_proj = nn.Dense(
-                    time_c,
+                    gamma_c,
                     dtype=self.dtype,
                     use_bias=self.config.use_bias,
                     kernel_init=jax.nn.initializers.normal(self.config.init_std),
                 )(text_inputs)
-            time_embedding += text_proj
+            gamma_embedding += text_proj
 
         # U-net
         hidden_states = []
@@ -327,7 +327,7 @@ class ImgDiffusionModule(nn.Module):
                     config=self.config,
                     channels=channels,
                     dtype=self.dtype,
-                )(x, time_embedding, deterministic=deterministic)
+                )(x, gamma_embedding, deterministic=deterministic)
                 x = nn.Dropout(rate=self.config.activation_dropout)(
                     x, deterministic=deterministic
                 )
@@ -385,7 +385,7 @@ class ImgDiffusionModule(nn.Module):
                     config=self.config,
                     channels=channels,
                     dtype=self.dtype,
-                )(x, time_embedding, deterministic=deterministic)
+                )(x, gamma_embedding, deterministic=deterministic)
                 x = nn.Dropout(rate=self.config.activation_dropout)(
                     x, deterministic=deterministic
                 )
